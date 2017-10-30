@@ -1,63 +1,81 @@
-import praw
+# System imports
+import io
+import json
 import os
-import time
-from datetime import datetime
-import traceback
 import requests
+import time
+import traceback
+from datetime import datetime
+# Third party imports
+import praw
+import prawcore
+from slackclient import SlackClient
+
+
+# Create our instance of SlackClient so we can send messages to slack 
+# when our conditions to do so are met
+slack_bot = SlackClient('SLACK_TOKEN_HERE')
+
+# This sets the number of reports in modqueue at which a Slack alert
+# will be triggered. You may change this to any number you like.
+NUM_TO_ALERT = 15
 
 
 def setup():
-    try:
-        reddit = praw.Reddit(client_id='CLIENT_ID',
-                             client_secret='CLIENT_SECRET',
-                             password='PASSWORD',
-                             user_agent='ModQ counter script by /u/zebradolphin5',
-                             username='USERNAME')
-        subreddit = reddit.subreddit('SUBREDDIT')
-        getCount(subreddit)
-    except:
-        error_message = traceback.format_exc()
-        now = str(datetime.now())
-        print(now + ' - Error:\n' + error_message + '\n\n\n')
-        time.sleep(300)
-        setup()
+    # Open our auth.json file storing our login and OAuth credentials,
+    # and store it in a variable for use in this script
+    with io.open('auth.json', 'r') as f:
+        auth = json.load(f)
+        try:
+            # Create our Reddit instance for authentication
+            r = praw.Reddit(client_id=auth['client_id'],
+                            client_secret=auth['client_secret'],
+                            username=auth['username'],
+                            password=auth['password'],
+                            user_agent=auth['user_agent'])
+
+            subreddit = r.subreddit(auth['subreddit'])
+            getCount(subreddit)
+        except prawcore.exceptions.OAuthException as e:
+            print('Prawcore OAuthException - Could not authenticate!\t {}'.format(e.description))
+        except:
+            error_message = traceback.format_exc()
+            now = str(datetime.now())
+            print(now + ' - Error:\n' + error_message + '\n\n\n')
+            time.sleep(300)
+            setup()
 
 
 def getCount(subreddit):
     while True:
         try:
-            startTime = time.time()
-
-            print('Gathering items in queue...')
-            modQueue = subreddit.get_mod_queue()
+            modQueue = subreddit.mod.modqueue()
             count = 0
 
+            # Determine how many reports are currently in mod-queue
             for item in modQueue:
                 count += 1
-            print('Total items in queue: ' + str(count))
+            print('Total items in queue: {} -- {}'.format(str(count), datetime.now()))
 
-            if count >= 15:
-                alertTime = str(datetime.now())
-                print(alertTime + 'Items in queue higher than 15! Alerting Slack.')
-                message = '*Uhh..HELLO?? What are you doing?? THERE ARE {} THINGS IN MODQUEUE...GET TO WORK!* \n<http://www.reddit.com/r/mod/about/modqueue>'.format(str(count))
-                body = {'text': '<!here> *Q-KILLER* \n{}'.format(message), 'channel': '#general', 'username': 'BOT', 'icon_emoji': ':middle_finger:'}
-                r_headers = {'Content-type': 'application/json'}
+            if count >= NUM_TO_ALERT:
+                alert_time = str(datetime.now())
+                print('{} - Items in queue higher than {}! Alerting Slack.'.format(alert_time, NUM_TO_ALERT))
 
-                try:
-                    r = requests.post('YOUR_WEBHOOK_URL', json=body, headers=r_headers)
+                with io.open('settings.json', 'r') as f:
+                    settings = json.load(f)
+                    message = settings['message'].format(str(count))
+                    r_headers = {'Content-type': 'application/json'}
 
-                    if r.status_code != 200:
+                    try:
+                        slack_bot.api_call("chat.postMessage", 
+                                            channel=settings['channel'], 
+                                            text=message, 
+                                            as_user=True)
+                    except:
+                        req_error = traceback.format_exc()
                         now = str(datetime.now())
-                        print(now + ' - Error:\n' + 'Received HTTP Response other than 200' + '\n\n\n')
+                        print(now + ' - Error:\n' + req_error + '\n\n\n')
 
-                except requests.exceptions.RequestException:
-                    req_error = traceback.format_exc()
-                    now = str(datetime.now())
-                    print(now + ' - Error:\n' + req_error + '\n\n\n')
-
-            elapsedTime = str(round(time.time() - startTime, 2))
-            finish = 'Cycle completed in {}s. \nWaiting for next interval...'.format(elapsedTime)
-            print(finish)
             time.sleep(180)
         except:
             error_message = traceback.format_exc()
@@ -69,3 +87,5 @@ def getCount(subreddit):
 
 if __name__ == '__main__':
     setup()
+
+
